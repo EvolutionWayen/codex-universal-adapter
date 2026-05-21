@@ -38,6 +38,12 @@ Codex 以为自己还在跟 OpenAI 聊天，其实背后已经是国内模型在
 
 ## 一键安装
 
+**国内用户（推荐，速度快）**：
+```bash
+bash <(curl -fsSL https://gitee.com/Evolutionwayen/codex-universal-adapter/raw/main/install.sh)
+```
+
+**海外用户**：
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/EvolutionWayen/codex-universal-adapter/main/install.sh)
 ```
