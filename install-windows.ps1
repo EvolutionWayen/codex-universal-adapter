@@ -1,76 +1,85 @@
-#!/bin/bash
 # ============================================================
-# Codex Universal Adapter - 一键安装脚本（macOS）
-# 
+# Codex Universal Adapter - 一键安装脚本（Windows）
+#
 # 原理：Codex 使用 OpenAI Responses API 协议，但国内大部分
 # 模型服务商只支持 Chat Completions API。这个适配器跑在你
 # 电脑上，充当"翻译官"：
 #   Codex → [Responses API] → 本地适配器 → [Chat Completions] → 你的服务商
 #   Codex ← [Responses API] ← 本地适配器 ← [Chat Completions] ← 你的服务商
-# 
+#
 # 使用者只需要提供两样东西：
 #   1. API 请求地址（你的服务商提供的 Chat Completions 端点）
 #   2. API 密钥（你的服务商提供的 Key）
-# 
+#
 # 就可以让 Codex 使用任何兼容 OpenAI Chat Completions 的模型。
 # ============================================================
 
-set -e
+param()
 
-# ---------- 颜色 ----------
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+$ErrorActionPreference = "Stop"
 
 # ---------- 路径 ----------
-ADAPTER_DIR="$HOME/.codex-adapter"
-ADAPTER="$ADAPTER_DIR/codex-adapter.py"
-CONFIG="$ADAPTER_DIR/config.json"
-PLIST="$HOME/Library/LaunchAgents/com.codex-universal-adapter.plist"
-LABEL="com.codex-universal-adapter"
-LOG_DIR="$ADAPTER_DIR/logs"
+$AdapterDir = Join-Path $env:USERPROFILE ".codex-adapter"
+$Adapter = Join-Path $AdapterDir "codex-adapter.py"
+$Config = Join-Path $AdapterDir "config.json"
+$LogDir = Join-Path $AdapterDir "logs"
+$TaskName = "CodexUniversalAdapter"
 
-echo ""
-echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}${BOLD}║     Codex Universal Adapter - 一键安装           ║${NC}"
-echo -e "${CYAN}${BOLD}║     让 Codex 使用任何兼容 Chat Completions 的模型  ║${NC}"
-echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════╝${NC}"
-echo ""
+Write-Host ""
+Write-Host "  ==============================================================" -ForegroundColor Cyan
+Write-Host "    Codex Universal Adapter - 一键安装 (Windows)" -ForegroundColor Cyan
+Write-Host "    让 Codex 使用任何兼容 Chat Completions 的模型" -ForegroundColor Cyan
+Write-Host "  ==============================================================" -ForegroundColor Cyan
+Write-Host ""
 
 # ---------- 前置检查 ----------
-echo -e "${YELLOW}[1/6] 检查环境...${NC}"
+Write-Host "[1/6] 检查环境..." -ForegroundColor Yellow
 
-if ! command -v python3 &>/dev/null; then
-    echo -e "${RED}错误：未找到 python3，请先安装 Python 3${NC}"
-    exit 1
-fi
-
-echo -e "  python3: ${GREEN}$(python3 --version)${NC}"
-
-# ---------- 创建目录 ----------
-echo -e "${YELLOW}[2/6] 创建配置目录...${NC}"
-mkdir -p "$ADAPTER_DIR" "$LOG_DIR"
-
-# ---------- 写入适配器 ----------
-echo -e "${YELLOW}[3/6] 写入适配器程序...${NC}"
-
-cat > "$ADAPTER" <<'PYADAPTER'
-#!/usr/bin/env python3
-"""
-Codex Universal Adapter - Responses API → Chat Completions 协议转换器
-支持任何兼容 OpenAI Chat Completions API 的服务商
-
-配置文件：~/.codex-adapter/config.json
-{
-  "upstream": "https://你的服务商地址/v1",
-  "model": "模型名称",
-  "api_key": "你的API Key"
+$pythonCmd = $null
+foreach ($cmd in @("python", "python3", "py")) {
+    try {
+        $ver = & $cmd --version 2>&1
+        if ($ver -match "Python 3") {
+            $pythonCmd = $cmd
+            break
+        }
+    } catch {}
 }
 
-注意：upstream 只需填到 /v1，适配器会自动拼接 /chat/completions
+if (-not $pythonCmd) {
+    Write-Host "  错误：未找到 Python 3，请先安装 https://www.python.org/downloads/" -ForegroundColor Red
+    Write-Host "  安装时务必勾选 'Add Python to PATH'" -ForegroundColor Red
+    exit 1
+}
+
+$pythonVersion = & $pythonCmd --version 2>&1
+Write-Host "  Python: $pythonVersion" -ForegroundColor Green
+
+# 获取 Python 完整路径（用于 Task Scheduler）
+$pythonExe = (Get-Command $pythonCmd).Source
+
+# ---------- 创建目录 ----------
+Write-Host "[2/6] 创建配置目录..." -ForegroundColor Yellow
+New-Item -ItemType Directory -Force -Path $AdapterDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+# ---------- 写入适配器 ----------
+Write-Host "[3/6] 写入适配器程序..." -ForegroundColor Yellow
+
+$adapterCode = @'
+#!/usr/bin/env python3
+"""
+Codex Universal Adapter - Responses API -> Chat Completions
+Supports any OpenAI Chat Completions API compatible provider
+
+Config: ~/.codex-adapter/config.json
+{
+  "upstream": "https://your-provider/v1",
+  "model": "model-name",
+  "api_key": "your-api-key"
+}
+
+Note: upstream only needs to go up to /v1, the adapter auto-appends /chat/completions
 """
 
 import json
@@ -90,24 +99,18 @@ CONFIG_PATH = os.path.expanduser("~/.codex-adapter/config.json")
 
 
 def load_config(config_path=None):
-    """从配置文件读取上游地址、模型名、API Key
-    upstream 只需填到 /v1，适配器会自动拼接 /chat/completions
-    如果用户已经填了 /chat/completions 结尾，也能兼容
-    支持通过命令行参数 --config 指定配置文件路径
-    """
     path = config_path or CONFIG_PATH
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
         upstream = cfg.get("upstream", "").rstrip("/")
-        # 自动补全 /chat/completions
         if not upstream.endswith("/chat/completions"):
             upstream = upstream + "/chat/completions"
         return upstream, cfg.get("model", ""), cfg.get("api_key", "")
     return "", "", ""
 
 
-UPSTREAM, UPSTREAM_MODEL, DEFAULT_API_KEY = load_config()
+UPSTREAM, UPSTREAM_MODEL, DEFAULT_API_KEY = "", "", ""
 
 
 def extract_text(value):
@@ -313,12 +316,12 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as err:
             detail = err.read().decode("utf-8", "replace")
             print(f"upstream HTTP {err.code}: {detail}", flush=True)
-            error_msg = f"上游接口返回错误 HTTP {err.code}: {detail[:1200]}"
+            error_msg = f"Upstream HTTP error {err.code}: {detail[:1200]}"
             data = {"choices": [{"message": {"content": error_msg}}]}
         except urllib.error.URLError as err:
             detail = str(err)
             print(f"upstream URL error: {detail}", flush=True)
-            error_msg = f"上游接口连接失败: {detail[:1200]}"
+            error_msg = f"Upstream connection failed: {detail[:1200]}"
             data = {"choices": [{"message": {"content": error_msg}}]}
         message = (data.get("choices") or [{}])[0].get("message") or {}
         output = output_from_chat_message(message)
@@ -349,16 +352,16 @@ def main():
     global UPSTREAM, UPSTREAM_MODEL, DEFAULT_API_KEY
 
     import argparse
-    parser = argparse.ArgumentParser(description="Codex Universal Adapter — Responses API → Chat Completions")
-    parser.add_argument("--config", default=CONFIG_PATH, help="配置文件路径 (默认: ~/.codex-adapter/config.json)")
-    parser.add_argument("--port", type=int, default=PORT, help="监听端口 (默认: 18666)")
+    parser = argparse.ArgumentParser(description="Codex Universal Adapter - Responses API to Chat Completions")
+    parser.add_argument("--config", default=CONFIG_PATH, help="Config file path (default: ~/.codex-adapter/config.json)")
+    parser.add_argument("--port", type=int, default=PORT, help="Listen port (default: 18666)")
     args = parser.parse_args()
 
     UPSTREAM, UPSTREAM_MODEL, DEFAULT_API_KEY = load_config(args.config)
 
     if not UPSTREAM or not UPSTREAM_MODEL:
-        print(f"错误：配置文件 {args.config} 中缺少 upstream 或 model", flush=True)
-        print(f'请确保配置文件格式如下：\n{{"upstream": "https://xxx/v1", "model": "模型名", "api_key": "sk-xxx"}}', flush=True)
+        print(f"Error: config file {args.config} missing upstream or model", flush=True)
+        print(f'Expected format: {{""upstream"": ""https://xxx/v1"", ""model"": ""model-name"", ""api_key"": ""sk-xxx""}}', flush=True)
         return
 
     httpd = ThreadingHTTPServer((HOST, args.port), Handler)
@@ -371,121 +374,107 @@ def main():
 
 if __name__ == "__main__":
     main()
-PYADAPTER
+'@
 
-chmod +x "$ADAPTER"
-echo -e "  ${GREEN}OK${NC} → $ADAPTER"
+Set-Content -Path $Adapter -Value $adapterCode -Encoding UTF8
+Write-Host "  OK -> $Adapter" -ForegroundColor Green
 
 # ---------- 收集用户输入 ----------
-echo ""
-echo -e "${BOLD}请输入你的服务商信息：${NC}"
-echo -e ""
-echo -e "  ${CYAN}常见服务商地址参考（只需填到 /v1）：${NC}"
-echo -e "  ┌──────────────────┬──────────────────────────────────────────────────────┐"
-echo -e "  │ 服务商            │ API 基础地址                                          │"
-echo -e "  ├──────────────────┼──────────────────────────────────────────────────────┤"
-echo -e "  │ SenseNova(商汤)   │ https://token.sensenova.cn/v1                        │"
-echo -e "  │ DeepSeek          │ https://api.deepseek.com/v1                          │"
-echo -e "  │ 硅基流动           │ https://api.siliconflow.cn/v1                        │"
-echo -e "  │ 阿里云百炼         │ https://dashscope.aliyuncs.com/compatible-mode/v1    │"
-echo -e "  │ 火山引擎(豆包)     │ https://ark.cn-beijing.volces.com/api/v3             │"
-echo -e "  │ 智谱 AI           │ https://open.bigmodel.cn/api/paas/v4                 │"
-echo -e "  │ OpenRouter        │ https://openrouter.ai/api/v1                         │"
-echo -e "  │ 生数云            │ https://router.shengsuanyun.com/v1                   │"
-echo -e "  └──────────────────┴──────────────────────────────────────────────────────┘"
-echo ""
+Write-Host ""
+Write-Host "  请输入你的服务商信息：" -ForegroundColor White
+Write-Host ""
+Write-Host "  常见服务商地址参考（只需填到 /v1）：" -ForegroundColor Cyan
+Write-Host "  ┌──────────────────┬──────────────────────────────────────────────────────┐"
+Write-Host "  │ 服务商            │ API 基础地址                                          │"
+Write-Host "  ├──────────────────┼──────────────────────────────────────────────────────┤"
+Write-Host "  │ SenseNova(商汤)   │ https://token.sensenova.cn/v1                        │"
+Write-Host "  │ DeepSeek          │ https://api.deepseek.com/v1                          │"
+Write-Host "  │ 硅基流动           │ https://api.siliconflow.cn/v1                        │"
+Write-Host "  │ 阿里云百炼         │ https://dashscope.aliyuncs.com/compatible-mode/v1    │"
+Write-Host "  │ 火山引擎(豆包)     │ https://ark.cn-beijing.volces.com/api/v3             │"
+Write-Host "  │ 智谱 AI           │ https://open.bigmodel.cn/api/paas/v4                 │"
+Write-Host "  │ OpenRouter        │ https://openrouter.ai/api/v1                         │"
+Write-Host "  │ 生数云            │ https://router.shengsuanyun.com/v1                   │"
+Write-Host "  └──────────────────┴──────────────────────────────────────────────────────┘"
+Write-Host ""
 
-# 输入 API 地址
-read -p "1) API 基础地址（只需到 /v1，如 https://token.sensenova.cn/v1）: " API_URL
-if [ -z "$API_URL" ]; then
-    echo -e "${RED}错误：API 地址不能为空${NC}"
+$ApiUrl = Read-Host "1) API 基础地址（只需到 /v1，如 https://token.sensenova.cn/v1）"
+if ([string]::IsNullOrWhiteSpace($ApiUrl)) {
+    Write-Host "  错误：API 地址不能为空" -ForegroundColor Red
     exit 1
-fi
+}
 
-# 输入模型名
-read -p "2) 模型名称（如 deepseek-v4-flash）: " MODEL_NAME
-if [ -z "$MODEL_NAME" ]; then
-    echo -e "${RED}错误：模型名称不能为空${NC}"
+$ModelName = Read-Host "2) 模型名称（如 deepseek-v4-flash）"
+if ([string]::IsNullOrWhiteSpace($ModelName)) {
+    Write-Host "  错误：模型名称不能为空" -ForegroundColor Red
     exit 1
-fi
+}
 
-# 输入 API Key
-read -s -p "3) API 密钥（输入时不显示明文）: " API_KEY
-echo ""
-if [ -z "$API_KEY" ]; then
-    echo -e "${RED}错误：API 密钥不能为空${NC}"
+$ApiKeySec = Read-Host "3) API 密钥" -AsSecureString
+$ApiKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+    [Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKeySec)
+)
+if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+    Write-Host "  错误：API 密钥不能为空" -ForegroundColor Red
     exit 1
-fi
+}
 
 # ---------- 写入配置 ----------
-echo -e "${YELLOW}[4/6] 写入配置文件...${NC}"
-cat > "$CONFIG" <<EOF
-{
-  "upstream": "$API_URL",
-  "model": "$MODEL_NAME",
-  "api_key": "$API_KEY"
+Write-Host "[4/6] 写入配置文件..." -ForegroundColor Yellow
+$configObj = @{
+    upstream = $ApiUrl
+    model    = $ModelName
+    api_key  = $ApiKey
+} | ConvertTo-Json
+Set-Content -Path $Config -Value $configObj -Encoding UTF8
+Write-Host "  OK -> $Config" -ForegroundColor Green
+
+# ---------- 注册开机自启（Task Scheduler）----------
+Write-Host "[5/6] 注册开机自启服务..." -ForegroundColor Yellow
+
+# 先删除旧任务（如果存在）
+Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+
+# 创建 Action
+$action = New-ScheduledTaskAction -Execute $pythonExe -Argument "`"$Adapter`"" -WorkingDirectory $AdapterDir
+
+# 创建 Trigger（用户登录时启动）
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+
+# 创建 Settings
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+
+# 注册任务
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description "Codex Universal Adapter - Responses API to Chat Completions" -Force | Out-Null
+
+# 立即启动
+Start-ScheduledTask -TaskName $TaskName
+
+Start-Sleep -Seconds 2
+
+# 验证任务状态
+$taskState = (Get-ScheduledTask -TaskName $TaskName).State
+Write-Host "  OK -> 任务状态: $taskState" -ForegroundColor Green
+
+# ---------- 配置 Codex ----------
+Write-Host "[6/6] 配置 Codex..." -ForegroundColor Yellow
+
+# Windows 上 Codex 的配置路径
+$CodexDir = Join-Path $env:APPDATA "codex"
+if (-not (Test-Path $CodexDir)) {
+    # 兜底：尝试用户目录
+    $CodexDir = Join-Path $env:USERPROFILE ".codex"
 }
-EOF
-chmod 600 "$CONFIG"
-echo -e "  ${GREEN}OK${NC} → $CONFIG"
+New-Item -ItemType Directory -Force -Path $CodexDir | Out-Null
 
-# ---------- 注册后台服务 ----------
-echo -e "${YELLOW}[5/6] 注册开机自启服务...${NC}"
+$CodexConfig = Join-Path $CodexDir "config.toml"
+if (Test-Path $CodexConfig) {
+    $backupName = "config.toml.bak.$(Get-Date -Format 'yyyyMMddHHmmss')"
+    Copy-Item $CodexConfig (Join-Path $CodexDir $backupName)
+}
 
-# 先卸载旧版（如果存在）
-if [ -f "$PLIST" ]; then
-    launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
-fi
-
-# 也卸载旧版讯飞适配器
-OLD_PLIST="$HOME/Library/LaunchAgents/com.kangarooking.xfyun-codex-adapter.plist"
-if [ -f "$OLD_PLIST" ]; then
-    launchctl bootout "gui/$(id -u)" "$OLD_PLIST" 2>/dev/null || true
-fi
-
-cat > "$PLIST" <<PLISTEOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/python3</string>
-    <string>${ADAPTER}</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>${LOG_DIR}/adapter.log</string>
-  <key>StandardErrorPath</key>
-  <string>${LOG_DIR}/adapter.err.log</string>
-</dict>
-</plist>
-PLISTEOF
-
-launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || true
-launchctl kickstart -k "gui/$(id -u)/${LABEL}"
-echo -e "  ${GREEN}OK${NC} → 服务已启动"
-
-# ---------- 配置 CC Switch / Codex ----------
-echo -e "${YELLOW}[6/6] 配置 Codex...${NC}"
-
-# 写入 Codex config.toml
-CODEX_DIR="$HOME/.codex"
-mkdir -p "$CODEX_DIR"
-
-CODEX_CONFIG="$CODEX_DIR/config.toml"
-if [ -f "$CODEX_CONFIG" ]; then
-    # 备份原有配置
-    cp "$CODEX_CONFIG" "${CODEX_CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
-fi
-
-cat > "$CODEX_CONFIG" <<TOMLEOF
-model = "${MODEL_NAME}"
+$tomlContent = @"
+model = "$ModelName"
 model_provider = "universal_adapter"
 
 [model_providers.universal_adapter]
@@ -502,37 +491,43 @@ disable_response_storage = true
 
 model_context_window = 1000000
 model_auto_compact_token_limit = 900000
-TOMLEOF
+"@
+Set-Content -Path $CodexConfig -Value $tomlContent -Encoding UTF8
 
-# 写入 Codex auth.json
-cat > "$CODEX_DIR/auth.json" <<AUTHEOF
-{
-  "OPENAI_API_KEY": "${API_KEY}"
-}
-AUTHEOF
-chmod 600 "$CODEX_DIR/auth.json"
+# 写入 auth.json
+$CodexAuth = Join-Path $CodexDir "auth.json"
+$authObj = @{
+    OPENAI_API_KEY = $ApiKey
+} | ConvertTo-Json
+Set-Content -Path $CodexAuth -Value $authObj -Encoding UTF8
 
-echo -e "  ${GREEN}OK${NC} → $CODEX_CONFIG"
+Write-Host "  OK -> $CodexConfig" -ForegroundColor Green
 
 # ---------- 完成 ----------
-sleep 1
+Start-Sleep -Seconds 2
 
-echo ""
-echo -e "${GREEN}${BOLD}✅ 安装完成！${NC}"
-echo ""
-echo -e "  适配器状态：$(curl -s http://127.0.0.1:18666/health 2>/dev/null || echo '{"ok":false}')"
-echo -e "  上游地址：$API_URL"
-echo -e "  模型名称：$MODEL_NAME"
-echo ""
-echo -e "${BOLD}  下一步：重启 Codex 即可使用${NC}"
-echo ""
-echo -e "  ${CYAN}常用命令：${NC}"
-echo -e "    查看状态：curl http://127.0.0.1:18666/health"
-echo -e "    查看模型：curl http://127.0.0.1:18666/v1/models"
-echo -e "    查看日志：cat $LOG_DIR/adapter.log"
-echo -e "    修改配置：编辑 $CONFIG（改完执行 launchctl kickstart -k \"gui/\$(id -u)/$LABEL\"）"
-echo ""
-echo -e "  ${CYAN}卸载命令：${NC}"
-echo -e "    curl -fsSL https://gitee.com/kangarooking/xfyun-codex-adapter/raw/main/uninstall.sh | bash"
-echo -e "    （或手动：launchctl bootout \"gui/\$(id -u)\" $PLIST && rm -rf $ADAPTER_DIR）"
-echo ""
+# 验证适配器是否启动
+$healthOk = $false
+try {
+    $response = Invoke-WebRequest -Uri "http://127.0.0.1:18666/health" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+    $healthOk = ($response.Content -eq '{"ok":true}')
+} catch {}
+
+Write-Host ""
+Write-Host "  安装完成！" -ForegroundColor Green
+Write-Host ""
+Write-Host "  适配器状态：$(if ($healthOk) { '{"ok":true}' } else { '{"ok":false} - 请稍等几秒后重试' })"
+Write-Host "  上游地址：$ApiUrl"
+Write-Host "  模型名称：$ModelName"
+Write-Host ""
+Write-Host "  下一步：重启 Codex 即可使用" -ForegroundColor White
+Write-Host ""
+Write-Host "  常用命令：" -ForegroundColor Cyan
+Write-Host "    查看状态：Invoke-WebRequest http://127.0.0.1:18666/health"
+Write-Host "    查看模型：Invoke-WebRequest http://127.0.0.1:18666/v1/models"
+Write-Host "    修改配置：记事本 $Config"
+Write-Host "    重启适配器：Restart-ScheduledTask -TaskName `"$TaskName`""
+Write-Host ""
+Write-Host "  卸载命令：" -ForegroundColor Cyan
+Write-Host "    Unregister-ScheduledTask -TaskName `"$TaskName`" -Confirm:`$false; Remove-Item -Recurse -Force `"$AdapterDir`""
+Write-Host ""
